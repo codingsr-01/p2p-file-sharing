@@ -1,0 +1,31 @@
+# Index server + 3 peers on their own bridge network, as in the original
+# deployment on an Azure VM. The programs are interactive: attach to each
+# container with `docker attach --sig-proxy=false p2p-peer1`, answer the
+# prompts, and detach with Ctrl-C (the container keeps running).
+# The index server is reachable from the peers as "indexserver", port 8085.
+services:
+  indexserver:
+    build: .
+    image: p2p-file-sharing
+    container_name: p2p-indexserver
+    command: ["java", "-jar", "IndexServer.jar"]
+    stdin_open: true
+    networks: [p2p]
+
+  peer1: &peer
+    build: .
+    image: p2p-file-sharing
+    container_name: p2p-peer1
+    depends_on: [indexserver]
+    stdin_open: true
+    volumes: ["./demo:/app/data"]   # peer N shares demo/peer_N, downloads go to demo/peer_N/download
+    networks: [p2p]
+  peer2:
+    <<: *peer
+    container_name: p2p-peer2
+  peer3:
+    <<: *peer
+    container_name: p2p-peer3
+
+networks:
+  p2p:
