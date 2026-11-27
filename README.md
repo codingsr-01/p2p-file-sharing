@@ -1,29 +1,65 @@
-# Peer-to-peer file sharing in Java (index server + peers, Docker, Azure)
+# Peer-to-peer file sharing in Java
 
-A distributed file-sharing service built on plain **Java sockets and threads**. An **index server** keeps track of the peers in the network. Each **peer** is at the same time a **client** (it searches the network and downloads files) and a **server** (it answers searches and sends files). The system was deployed on a **Microsoft Azure** VM, with every node in its own **Docker** container on a dedicated network.
+![Java](https://img.shields.io/badge/Java-14%2B-ED8B00?logo=openjdk&logoColor=white)
+![Sockets & threads](https://img.shields.io/badge/sockets%20%26%20threads-java.net-555)
+![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![Tested](https://img.shields.io/badge/tested-local%20%2B%20Docker-2ea44f)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
-```mermaid
-flowchart LR
-    subgraph net["Docker network (Azure VM)"]
-        IS[("Index server<br/>:8085<br/>list of connected peers")]
-        P1["Peer 1<br/>client + server"]
-        P2["Peer 2<br/>client + server"]
-        P3["Peer 3<br/>client + server"]
-    end
-    P1 & P2 & P3 -- "REGISTRAZIONE / RICEZIONE<br/>LISTA / DISCONNESSIONE" --> IS
-    P2 -- "CERCA file" --> P1 & P3
-    P2 == "DOWNLOAD from the chosen peer" ==> P3
-```
+**A distributed file-sharing service built only with Java sockets and threads.** An index server keeps track of who is online, and **every peer can search and download files directly from every other peer**. It was deployed on a Microsoft Azure VM, with one Docker container per node.
 
-## What it does
-1. A peer starts its own server side and **registers** with the index server, which replies with the list of connected peers.
-2. The user **searches a file by name**. The peer refreshes the peer list, shows which files the network offers, and sends a `CERCA` request to **every active peer**.
-3. Among the peers that answer `TROVATO`, it **picks one at random** and downloads the file from it in a **background thread**, so the user can keep working. The other peers keep no state about the request, so nothing needs to be cancelled.
-4. When a peer receives a `DOWNLOAD` request, it streams the file from its shared folder.
-5. On `TERMINA` the peer stops accepting requests, **waits for the downloads in progress**, then sends `DISCONNESSIONE` to the index server.
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img alt="Architecture: an index server connected to every peer, and every peer connected to every other peer for file sharing" src="assets/architecture-light.svg" width="820">
+</picture>
+</p>
 
-### Protocol
-Every request opens a new TCP connection. Messages are Java-serialised objects.
+> [!NOTE]
+> **In a nutshell.** Each peer runs two programs at once:
+> - a **client**, where the user types commands;
+> - a **server**, which answers other peers.
+>
+> To find a file, a peer asks the index server who is online, then asks **all** the other peers whether they have it, and downloads it **directly from one of them**. The index server never sees the files. It only keeps the list of connected peers and their shared files.
+
+## Contents
+- [How it works](#how-it-works)
+- [Protocol](#protocol)
+- [Run it](#run-it)
+- [Example session](#example-session)
+- [What was tested and fixed](#what-was-tested-and-fixed)
+- [Limitations](#limitations)
+- [Repository structure](#repository-structure)
+
+## How it works
+There are two kinds of node:
+
+| Node | Role |
+|---|---|
+| **Index server** (port 8085) | Keeps the list of connected peers and the files each one shares. It answers registration, peer-list, file-list and disconnection requests, each in its own thread. |
+| **Peer** | **Client side**: a menu loop driven by the user (search & download, idle, terminate). **Server side**: a `ServerSocket` that answers `CERCA` (do you have this file?) and `DOWNLOAD` (send it) from other peers, again one thread per request. Each peer shares one folder, `peer_<ID>/`. |
+
+A search and download takes four steps:
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/search-download-dark.svg">
+  <img alt="Search and download: peer 1 asks the index server, sends CERCA to all peers, gets TROVATO/NIENTE answers and downloads from the chosen peer" src="assets/search-download-light.svg" width="820">
+</picture>
+</p>
+
+1. **Refresh the network.** The peer asks the index server for the connected peers (`RICEZIONE`) and the files they share (`LISTA`).
+2. **Search everywhere.** It sends `CERCA "<file>"` to every other peer.
+3. **Collect the answers.** Each peer looks in its shared folder and answers `TROVATO` (found) or `NIENTE` (not found).
+4. **Download.** One `TROVATO` peer is picked at random, and the file streams over a direct TCP connection in a **background thread**, so the user can keep searching. The other peers kept no state about the request, so nothing has to be cancelled.
+
+When the user chooses **terminate**:
+- the peer closes its server side;
+- **it waits for every download still running**;
+- then it sends `DISCONNESSIONE` to the index server.
+
+## Protocol
+Every request opens a new TCP connection. Requests and replies are Java-serialised objects, and file contents are sent as raw bytes.
 
 | To | Request | Payload | Reply |
 |---|---|---|---|
@@ -34,61 +70,163 @@ Every request opens a new TCP connection. Messages are Java-serialised objects.
 | Peer | `CERCA` | file name | `TROVATO` + the peer, or `NIENTE` |
 | Peer | `DOWNLOAD` | file name (UTF) | raw file bytes |
 
-Concurrency:
-- every incoming connection is handled by its own thread, on both the index server and the peers;
-- the index server synchronises on the peer list;
-- each download runs in its own thread, and the threads are joined when the peer shuts down.
+A sequence diagram of the whole exchange is in [`docs/REPORT.md`](docs/REPORT.md).
 
 ## Run it
-Requirements: JDK 14 or later (the code uses switch expressions).
-
+### Locally
+Requires JDK 14+.
 ```bash
-make                                   # build/IndexServer.jar, build/PeerClientServer.jar
-
-java -jar build/IndexServer.jar        # terminal 1: listens on port 8085, type TERMINA to stop
-java -jar build/PeerClientServer.jar demo/peer_    # terminals 2, 3, ...: one per peer
+make                                                # build/IndexServer.jar, build/PeerClientServer.jar
+java -jar build/IndexServer.jar                     # terminal 1 (type TERMINA to stop)
+java -jar build/PeerClientServer.jar demo/peer_     # terminals 2, 3, …: one per peer
 ```
-Both programs are interactive. A peer asks for:
-- its own port (e.g. 9001);
-- its ID: peer N shares the folder `demo/peer_N` and saves downloads to `demo/peer_N/download`;
-- the index server's address and port (`127.0.0.1` and `8085`);
-- then, in a loop, the operation: `0` search and download, `1` stay idle for a given time, `2` terminate.
+A peer asks for:
+- its port (e.g. 9001);
+- its ID: peer N shares `demo/peer_N/` and saves downloads to `demo/peer_N/download/`;
+- the index server's address and port (`127.0.0.1`, `8085`);
+- then, in a loop, an operation: `0` search & download, `1` stay idle, `2` terminate.
 
-### With Docker (one container per node, as in the Azure deployment)
+### With Docker: one container per node, like the Azure deployment
 ```bash
-docker compose up -d --build
-docker attach --sig-proxy=false p2p-peer1   # port 9001, ID 1, index server "indexserver", port 8085
-docker attach --sig-proxy=false p2p-peer2   # in another terminal: port 9002, ID 2, ...
-docker compose down                         # stop everything
+docker compose up -d --build                        # index server + 3 peers on their own network
+docker attach --sig-proxy=false p2p-peer1           # port 9001, ID 1, server "indexserver", port 8085
+docker attach --sig-proxy=false p2p-peer2           # another terminal: port 9002, ID 2, …
+docker compose down
 ```
-The prompts printed before you attach are in `docker logs p2p-peer1`. Ctrl-C detaches without stopping the container. The `demo/` folder is mounted into every peer at `/app/data`, so downloaded files appear on the host (owned by root, because the containers run as root).
+- Prompts printed before you attach are in `docker logs p2p-peer1`.
+- Ctrl-C detaches without stopping the container.
+- The `demo/` folder is mounted in every peer, so downloads appear on the host.
 
-## Tested
-**Local** (JDK 17): an end-to-end run used an index server and 3 peers, driven through their interactive prompts:
-- all peers register;
-- a search for `hello.txt` finds the **2 peers** that share it and downloads it from one of them;
-- a 200 KB binary file arrives **byte-for-byte identical**;
-- `TERMINA` waits for both running downloads before disconnecting.
+## Example session
+Unedited output of the Docker run (the program prints in Italian). The only additions are the lines starting with `>`, which show what was typed at each prompt.
 
-**Docker** (Docker 29, Compose 2.40): `docker compose up --build` starts the 4 containers on the `p2p` network, each with its own IP. The same test was then driven through `docker attach`, with the peers reaching the index server by its service name `indexserver`. All 3 peers register, both downloads reach the host through the `demo/` volume (the binary file byte-for-byte identical), the peer exits cleanly after waiting for them, and `docker compose down` leaves nothing behind.
+<details>
+<summary><b>Peer 2</b> (172.18.0.3): searches and downloads two files, then terminates</summary>
 
-### Fixes compared with the course submission
-- **Every downloaded file was corrupted by 4 extra bytes** at the start (`AC ED 00 05`). The sending peer opened an `ObjectOutputStream` on the socket before knowing the request type, and its serialisation header ended up in front of the file. The stream is now created only to answer `CERCA`.
-- **Peer selection never picked the last peer** that had the file: `nextInt(size - 1)` became `nextInt(size)`.
+```text
+Inserisci il numero di porta del client:
+> 9002
+Inserisci l'ID del client:
+> 2
+Cartella già esistente!
+Inserisci l'indirizzo IP dell'IndexServer:
+> indexserver
+Inserisci il numero di porta dell'IndexServer:
+> 8085
+Il lato server del client 172.18.0.3 è attivo sulla porta 9002!
+Registrazione effettuata!
+Inserisci operazione da effettuare: [0=CERCAeDOWNLOAD, 1=IDLE, 2=TERMINA]
+> 0
+Operazione scelta: CERCA
+Aggiornamento della rete in corso...
+Aggiornamento effettuato!
+La rete mette a disposizione i seguenti file!
+{172.18.0.4=[hello.txt, blob.bin, notes.txt], 172.18.0.5=[hello.txt]}
+Inserisci nome del file cercato:
+> hello.txt
+Nome inserito: hello.txt
+Il numero di peer che hanno a disposizone il File è 2!
+Inserisci operazione da effettuare: [0=CERCAeDOWNLOAD, 1=IDLE, 2=TERMINA]
+> 0
+Sto aspettando il download del file...
+Operazione scelta: CERCA
+Aggiornamento della rete in corso...
+Aggiornamento effettuato!
+La rete mette a disposizione i seguenti file!
+{172.18.0.4=[hello.txt, blob.bin, notes.txt], 172.18.0.5=[hello.txt]}
+Inserisci nome del file cercato:
+> blob.bin
+Nome inserito: blob.bin
+Il peer 172.18.0.5_9003 non dispone del file blob.bin
+Il numero di peer che hanno a disposizone il File è 1!
+Inserisci operazione da effettuare: [0=CERCAeDOWNLOAD, 1=IDLE, 2=TERMINA]
+> 2
+Cartella per il download già esistente!
+Sto aspettando il download del file...
+Operazione scelta: TERMINA
+Lato server chiuso, non posso accettare più richieste!
+Controllo di eventuali download in corso...
+Attendo il download in corso del thread 23
+Il file blob.bin è stato scaricato con successo!
+Il file hello.txt è stato scaricato con successo!
+Attesa terminata!
+Richiesta disconnesione ricevuta!
+```
+</details>
 
-### Known limitations
+<details>
+<summary><b>Peer 1</b> (172.18.0.4): server side answering peer 2 (its idle prompts left out)</summary>
+
+```text
+Cartella già esistente!
+Il lato server del client 172.18.0.4 è attivo sulla porta 9001!
+Registrazione effettuata!
+Il client ha ricevuto una richiesta!
+Richiesta ricevuta: CERCA
+Dispongo del file richiesto: hello.txt
+Il client ha ricevuto una richiesta!
+Richiesta ricevuta: DOWNLOAD
+Sono il client scelto per il download...
+Il file da inviare è hello.txt:
+Invio in corso...
+Il client ha ricevuto una richiesta!
+Richiesta ricevuta: CERCA
+Dispongo del file richiesto: blob.bin
+Il client ha ricevuto una richiesta!
+Richiesta ricevuta: DOWNLOAD
+Sono il client scelto per il download...
+Il file da inviare è blob.bin:
+Invio in corso...
+Il file blob.bin è stato inviato!
+Il file hello.txt è stato inviato!
+```
+</details>
+
+<details>
+<summary><b>Index server</b> (172.18.0.2)</summary>
+
+```text
+Il server ha il seguente indirizzo IP: 172.18.0.2
+Digitare TERMINA per interrompere l'esecuzione del server!
+Il server è attivo sulla porta 8085!
+Si è connesso il seguente peer:
+PeerClientServer{indirizzoIp='172.18.0.4', numPorta=9001, listaFile=[hello.txt, blob.bin, notes.txt]}
+Si è connesso il seguente peer:
+PeerClientServer{indirizzoIp='172.18.0.5', numPorta=9003, listaFile=[hello.txt]}
+Si è connesso il seguente peer:
+PeerClientServer{indirizzoIp='172.18.0.3', numPorta=9002, listaFile=[readme_peer2.txt]}
+Di seguito la lista dei peer attalmente connessi alla rete:
+[PeerClientServer{indirizzoIp='172.18.0.4', numPorta=9001, listaFile=[hello.txt, blob.bin, notes.txt]}, PeerClientServer{indirizzoIp='172.18.0.5', numPorta=9003, listaFile=[hello.txt]}]
+```
+</details>
+
+## What was tested and fixed
+**Tested end to end**, both locally (JDK 17) and with Docker 29 / Compose 2.40:
+- 3 peers register with the index server;
+- a search for a file shared by two peers gets both answers;
+- a 200 KB binary file arrives **byte-for-byte identical** on the host;
+- *terminate* waits for both running downloads before disconnecting;
+- `docker compose down` leaves nothing behind.
+
+> [!IMPORTANT]
+> **Two bugs of the original course submission were fixed:**
+> 1. **Every downloaded file was corrupted by 4 extra bytes** (`AC ED 00 05`). The sending peer opened an `ObjectOutputStream` on the socket before knowing the request type, and its serialisation header ended up in front of the file. The stream is now created only to answer `CERCA`.
+> 2. **Peer selection never picked the last peer** that had the file: `nextInt(size - 1)` became `nextInt(size)`.
+
+## Limitations
 - Java serialisation over plain TCP, with no authentication. This is a teaching prototype, meant for a trusted network only.
-- The `LISTA` map is keyed by IP, so peers running on the same host overwrite each other in the file listing (search and download are not affected).
+- The `LISTA` map is keyed by IP, so peers running on the same host overwrite each other in the file listing (search and download are not affected). With Docker every peer has its own IP, as in the example above.
 - A peer announces the files present at start-up. Peers that crash without `DISCONNESSIONE` stay registered (there is no heartbeat).
-- Transfers include a **simulated delay of 10–50 s**, used in the demo to show that shutdown waits for the downloads in progress.
+- Transfers include a **simulated delay of 10–50 s**, used in the demo to show that shutdown waits for downloads in progress.
 
 ## Repository structure
 ```
 src/NodoIndexServer/   IndexServer (accept loop), RichiesteServerHandler (one thread per request)
 src/NodoPeer/          PeerClientServer (client side + server side), RichiestePeerHandler (CERCA / DOWNLOAD)
 demo/peer_N/           sample shared folders
-Dockerfile, docker-compose.yml
-docs/REPORT.md         technical report: requirements, design, deployment on Azure and Docker, tests
+Dockerfile             multi-stage build: compiles both jars, runs on a JRE image
+docker-compose.yml     index server + 3 peers + network + shared volume
+docs/REPORT.md         technical report: requirements, design, Azure + Docker deployment, tests
 ```
 
 ## Author
