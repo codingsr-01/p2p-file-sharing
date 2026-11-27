@@ -11,7 +11,7 @@
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-  <img alt="Architecture: an index server connected to every peer, and every peer connected to every other peer for file sharing" src="assets/architecture-light.svg" width="820">
+  <img alt="Architecture: an index server connected to every peer, every peer connected to every other peer, and an example where peer 1 sends CERCA to all peers and downloads the file from peer 2" src="assets/architecture-light.svg" width="820">
 </picture>
 </p>
 
