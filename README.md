@@ -6,7 +6,10 @@
 ![Tested](https://img.shields.io/badge/tested-local%20%2B%20Docker-2ea44f)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-**A distributed file-sharing service built only with Java sockets and threads.** An index server keeps track of who is online, and **every peer can search and download files directly from every other peer**. It was deployed on a Microsoft Azure VM, with one Docker container per node.
+## Abstract
+This project implements a **distributed peer-to-peer file-sharing service** in Java, using only TCP sockets, threads and object serialisation, with no middleware or external libraries. An **index server** keeps the list of the connected peers and of the files they share. Every **peer** is at the same time a client, through which the user searches for files by name, and a server that answers the requests of the other peers. To find a file, a peer gets the current list of peers from the index server and asks all of them in parallel whether they have it. Among those that answer positively, one is chosen at random and the file is downloaded directly from it in a background thread, so file contents never pass through the index server. When the user quits, the peer stops accepting requests, waits for its downloads in progress to finish and then deregisters from the index server. Every node runs in its own **Docker** container, and the system was deployed on a **Microsoft Azure** virtual machine. A Docker Compose setup runs the whole network on a single machine.
+
+**Keywords:** distributed systems, peer-to-peer, sockets, multithreading, Docker, Microsoft Azure
 
 <p align="center">
 <picture>
@@ -14,13 +17,6 @@
   <img alt="Architecture: an index server connected to every peer, every peer connected to every other peer, and an example where peer 1 sends CERCA to all peers and downloads the file from peer 2" src="assets/architecture-light.svg" width="820">
 </picture>
 </p>
-
-> [!NOTE]
-> **In a nutshell.** Each peer runs two programs at once:
-> - a **client**, where the user types commands;
-> - a **server**, which answers other peers.
->
-> To find a file, a peer asks the index server who is online, then asks **all** the other peers whether they have it, and downloads it **directly from one of them**. The index server never sees the files. It only keeps the list of connected peers and their shared files.
 
 ## Contents
 - [How it works](#how-it-works)
